@@ -1,0 +1,7 @@
+[tools]
+python = "3.14"
+uv = "latest"
+"pipx:pioarduino" = "6.1.19"
+
+[env]
+PLATFORMIO_CORE_DIR = "{{ config_root }}/.pioarduino"
