@@ -50,6 +50,11 @@ uint32_t next_measurement_ms = 0;
 uint32_t next_summary_ms = 0;
 SummaryAccumulator summary_accumulator;
 MinuteSummary latest_summary;
+bool sensor_ready = false;
+
+void setErrorLed(bool error) {
+  digitalWrite(kBlueLedPin, error ? HIGH : LOW);
+}
 
 uint16_t readBigEndian16(const uint8_t* data, size_t index) {
   return (static_cast<uint16_t>(data[index]) << 8) | data[index + 1];
@@ -165,15 +170,17 @@ void setup() {
                 kI2cSdaPin, kHm3301Address);
 
   pinMode(kBlueLedPin, OUTPUT);
-  digitalWrite(kBlueLedPin, LOW);
+  setErrorLed(false);
 
   if (!Wire.begin(kI2cSdaPin, kI2cSclPin, kI2cFrequencyHz)) {
     Serial.println("ERROR: failed to initialize I2C bus.");
+    setErrorLed(true);
     return;
   }
 
   if (!selectHm3301I2c()) {
     Serial.println("ERROR: HM3301 did not respond. Check power and wiring.");
+    setErrorLed(true);
     return;
   }
 
@@ -182,11 +189,17 @@ void setup() {
   const uint32_t measurement_start_ms = millis();
   next_measurement_ms = measurement_start_ms;
   next_summary_ms = measurement_start_ms + kSummaryIntervalMs;
+  sensor_ready = true;
   Serial.println("HM3301 initialized. The sensor needs about 30 seconds to warm up.");
 }
 
 void loop() {
   M5.update();
+
+  if (!sensor_ready) {
+    delay(100);
+    return;
+  }
 
   const uint32_t now = millis();
   if (static_cast<int32_t>(now - next_summary_ms) >= 0) {
@@ -221,6 +234,7 @@ void loop() {
 
   if (!read_succeeded) {
     Serial.println("ERROR: failed to read 29 bytes from HM3301 after 3 attempts.");
+    setErrorLed(true);
     return;
   }
   if (!checksum_valid) {
@@ -229,12 +243,10 @@ void loop() {
         "(calculated=0x%02X, received=0x%02X).\n",
         calculateChecksum(frame), frame[kHm3301FrameSize - 1]);
     printRawFrame(frame);
+    setErrorLed(true);
     return;
   }
 
+  setErrorLed(false);
   addMeasurements(summary_accumulator, frame);
-
-  static bool led_on = false;
-  led_on = !led_on;
-  digitalWrite(kBlueLedPin, led_on ? HIGH : LOW);
 }
