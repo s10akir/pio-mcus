@@ -14,12 +14,42 @@ constexpr uint32_t kI2cFrequencyHz = 20000;
 constexpr uint8_t kHm3301Address = 0x40;
 constexpr uint8_t kHm3301SelectI2cCommand = 0x88;
 constexpr size_t kHm3301FrameSize = 29;
-constexpr uint32_t kMeasurementIntervalMs = 5000;
-constexpr uint32_t kWarmUpTimeMs = 30000;
+constexpr uint32_t kMeasurementIntervalMs = 1000;
+constexpr uint32_t kSummaryIntervalMs = 60000;
 constexpr uint8_t kReadAttempts = 3;
+constexpr size_t kPmMeasurementCount = 3;
+
+// Atmospheric environment PM1.0, PM2.5, and PM10 in the HM3301 frame.
+constexpr size_t kPmMeasurementOffsets[kPmMeasurementCount] = {
+    10, 12, 14,
+};
+
+struct SummaryAccumulator {
+  uint32_t sums[kPmMeasurementCount] = {};
+  uint16_t maximums[kPmMeasurementCount] = {};
+  uint16_t sensor_number = 0;
+  uint8_t sample_count = 0;
+};
+
+struct MeasurementSummary {
+  float average = 0.0f;
+  uint16_t maximum = 0;
+};
+
+// The values to send when InfluxDB support is added later.
+struct MinuteSummary {
+  MeasurementSummary pm1_0;
+  MeasurementSummary pm2_5;
+  MeasurementSummary pm10;
+  uint16_t sensor_number = 0;
+  uint8_t sample_count = 0;
+};
 
 uint8_t frame[kHm3301FrameSize];
 uint32_t next_measurement_ms = 0;
+uint32_t next_summary_ms = 0;
+SummaryAccumulator summary_accumulator;
+MinuteSummary latest_summary;
 
 uint16_t readBigEndian16(const uint8_t* data, size_t index) {
   return (static_cast<uint16_t>(data[index]) << 8) | data[index + 1];
@@ -63,23 +93,64 @@ void printRawFrame(const uint8_t* data) {
   Serial.println();
 }
 
-void printMeasurements(const uint8_t* data) {
-  Serial.printf("sensor number: %u\n", readBigEndian16(data, 2));
-  Serial.println("mass concentration - standard particulate matter (CF=1):");
-  Serial.printf("  PM1.0 : %u ug/m3\n", readBigEndian16(data, 4));
-  Serial.printf("  PM2.5 : %u ug/m3\n", readBigEndian16(data, 6));
-  Serial.printf("  PM10  : %u ug/m3\n", readBigEndian16(data, 8));
+void addMeasurements(SummaryAccumulator& target, const uint8_t* data) {
+  target.sensor_number = readBigEndian16(data, 2);
+  for (size_t i = 0; i < kPmMeasurementCount; ++i) {
+    const uint16_t value = readBigEndian16(data, kPmMeasurementOffsets[i]);
+    target.sums[i] += value;
+    if (target.sample_count == 0 || value > target.maximums[i]) {
+      target.maximums[i] = value;
+    }
+  }
+  ++target.sample_count;
+}
+
+MinuteSummary finalizeSummary(const SummaryAccumulator& accumulator) {
+  MinuteSummary result;
+  result.sensor_number = accumulator.sensor_number;
+  result.sample_count = accumulator.sample_count;
+  if (accumulator.sample_count == 0) {
+    return result;
+  }
+
+  MeasurementSummary* measurements[kPmMeasurementCount] = {
+      &result.pm1_0, &result.pm2_5, &result.pm10,
+  };
+  for (size_t i = 0; i < kPmMeasurementCount; ++i) {
+    measurements[i]->average =
+        static_cast<float>(accumulator.sums[i]) / accumulator.sample_count;
+    measurements[i]->maximum = accumulator.maximums[i];
+  }
+  return result;
+}
+
+void printMeasurementSummary(const char* label,
+                             const MeasurementSummary& measurement) {
+  Serial.printf("  %-5s: average=%.1f ug/m3, max=%u ug/m3\n", label,
+                measurement.average,
+                static_cast<unsigned int>(measurement.maximum));
+}
+
+void printSummary(uint32_t now, const MinuteSummary& data) {
+  Serial.printf("\n[%lu ms] 1-minute summary (samples=%u)\n",
+                static_cast<unsigned long>(now),
+                static_cast<unsigned int>(data.sample_count));
+  if (data.sample_count == 0) {
+    Serial.println("no valid samples");
+    return;
+  }
+
+  Serial.printf("sensor number: %u\n",
+                static_cast<unsigned int>(data.sensor_number));
   Serial.println("mass concentration - atmospheric environment:");
-  Serial.printf("  PM1.0 : %u ug/m3\n", readBigEndian16(data, 10));
-  Serial.printf("  PM2.5 : %u ug/m3\n", readBigEndian16(data, 12));
-  Serial.printf("  PM10  : %u ug/m3\n", readBigEndian16(data, 14));
-  Serial.println("particle count by minimum diameter:");
-  Serial.printf("  >= 0.3 um : %u /L\n", readBigEndian16(data, 16));
-  Serial.printf("  >= 0.5 um : %u /L\n", readBigEndian16(data, 18));
-  Serial.printf("  >= 1.0 um : %u /L\n", readBigEndian16(data, 20));
-  Serial.printf("  >= 2.5 um : %u /L\n", readBigEndian16(data, 22));
-  Serial.printf("  >= 5.0 um : %u /L\n", readBigEndian16(data, 24));
-  Serial.printf("  >= 10  um : %u /L\n", readBigEndian16(data, 26));
+  printMeasurementSummary("PM1.0", data.pm1_0);
+  printMeasurementSummary("PM2.5", data.pm2_5);
+  printMeasurementSummary("PM10", data.pm10);
+}
+
+void handleMinuteSummary(uint32_t now, const MinuteSummary& data) {
+  printSummary(now, data);
+  // A future InfluxDB POST can consume data here without changing aggregation.
 }
 }  // namespace
 
@@ -108,7 +179,9 @@ void setup() {
 
   // Allow the sensor to stop UART output and switch to I2C mode.
   delay(100);
-  next_measurement_ms = millis() + 1000;
+  const uint32_t measurement_start_ms = millis();
+  next_measurement_ms = measurement_start_ms;
+  next_summary_ms = measurement_start_ms + kSummaryIntervalMs;
   Serial.println("HM3301 initialized. The sensor needs about 30 seconds to warm up.");
 }
 
@@ -116,11 +189,22 @@ void loop() {
   M5.update();
 
   const uint32_t now = millis();
+  if (static_cast<int32_t>(now - next_summary_ms) >= 0) {
+    latest_summary = finalizeSummary(summary_accumulator);
+    handleMinuteSummary(now, latest_summary);
+    summary_accumulator = {};
+    do {
+      next_summary_ms += kSummaryIntervalMs;
+    } while (static_cast<int32_t>(now - next_summary_ms) >= 0);
+  }
+
   if (static_cast<int32_t>(now - next_measurement_ms) < 0) {
     delay(10);
     return;
   }
-  next_measurement_ms = now + kMeasurementIntervalMs;
+  do {
+    next_measurement_ms += kMeasurementIntervalMs;
+  } while (static_cast<int32_t>(now - next_measurement_ms) >= 0);
 
   bool read_succeeded = false;
   bool checksum_valid = false;
@@ -148,9 +232,7 @@ void loop() {
     return;
   }
 
-  Serial.printf("\n[%lu ms]%s\n", static_cast<unsigned long>(now),
-                now < kWarmUpTimeMs ? " (warming up)" : "");
-  printMeasurements(frame);
+  addMeasurements(summary_accumulator, frame);
 
   static bool led_on = false;
   led_on = !led_on;
