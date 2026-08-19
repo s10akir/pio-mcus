@@ -2,10 +2,10 @@
 #include <HTTPClient.h>
 #include <M5Unified.h>
 #include <NetworkClientSecure.h>
-#include <WiFi.h>
 #include <Wire.h>
 #include <time.h>
 
+#include <WifiConnection.h>
 #include "metrics.h"
 #include "secrets.h"
 
@@ -23,7 +23,6 @@ constexpr uint8_t kHm3301SelectI2cCommand = 0x88;
 constexpr size_t kHm3301FrameSize = 29;
 constexpr uint32_t kMeasurementIntervalMs = 1000;
 constexpr uint32_t kSummaryIntervalMs = 60000;
-constexpr uint32_t kWifiRetryIntervalMs = 10000;
 constexpr uint8_t kReadAttempts = 3;
 constexpr time_t kMinimumValidTime = 1577836800;  // 2020-01-01 UTC
 constexpr size_t kPrometheusPayloadSize = 1024;
@@ -50,45 +49,25 @@ uint8_t frame[kHm3301FrameSize];
 char prometheus_payload[kPrometheusPayloadSize];
 uint32_t next_measurement_ms = 0;
 uint32_t next_summary_ms = 0;
-uint32_t next_wifi_retry_ms = 0;
 SummaryAccumulator summary_accumulator;
+WifiConnection wifi;
 bool sensor_ready = false;
 bool sensor_error = false;
 bool network_error = true;
-bool wifi_was_connected = false;
 
 void updateErrorLed() {
   digitalWrite(kBlueLedPin, sensor_error || network_error ? HIGH : LOW);
 }
 
 void startNetwork() {
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-  WiFi.begin(Secrets::kWifiSsid, Secrets::kWifiPassword);
+  wifi.begin(Secrets::kWifiSsid, Secrets::kWifiPassword);
   configTime(0, 0, Secrets::kNtpServer);
-  next_wifi_retry_ms = millis() + kWifiRetryIntervalMs;
-  Serial.printf("Wi-Fi connecting to %s\n", Secrets::kWifiSsid);
 }
 
 void maintainNetwork(uint32_t now) {
-  if (WiFi.status() == WL_CONNECTED) {
-    if (!wifi_was_connected) {
-      Serial.printf("Wi-Fi connected: %s\n", WiFi.localIP().toString().c_str());
-      wifi_was_connected = true;
-    }
-    return;
-  }
-
-  if (wifi_was_connected) {
-    Serial.println("ERROR: Wi-Fi disconnected.");
-    wifi_was_connected = false;
-  }
-  network_error = true;
-  updateErrorLed();
-  if (static_cast<int32_t>(now - next_wifi_retry_ms) >= 0) {
-    Serial.println("Wi-Fi reconnecting...");
-    WiFi.begin(Secrets::kWifiSsid, Secrets::kWifiPassword);
-    next_wifi_retry_ms = now + kWifiRetryIntervalMs;
+  if (!wifi.update(now)) {
+    network_error = true;
+    updateErrorLed();
   }
 }
 
@@ -187,7 +166,7 @@ void printSummary(uint32_t now, const MinuteSummary& data) {
 }
 
 bool sendSummary(const MinuteSummary& summary) {
-  if (WiFi.status() != WL_CONNECTED) {
+  if (!wifi.connected()) {
     Serial.println("ERROR: summary not sent: Wi-Fi is disconnected.");
     return false;
   }
