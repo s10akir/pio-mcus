@@ -17,12 +17,16 @@ constexpr size_t kHm3301FrameSize = 29;
 constexpr uint32_t kMeasurementIntervalMs = 1000;
 constexpr uint32_t kSummaryIntervalMs = 60000;
 constexpr uint8_t kReadAttempts = 3;
-constexpr size_t kPmMeasurementCount = 3;
 
 // Atmospheric environment PM1.0, PM2.5, and PM10 in the HM3301 frame.
-constexpr size_t kPmMeasurementOffsets[kPmMeasurementCount] = {
-    10, 12, 14,
+struct PmMeasurement {
+  size_t offset;
+  const char* label;
 };
+constexpr PmMeasurement kPmMeasurements[] = {
+    {10, "PM1.0"}, {12, "PM2.5"}, {14, "PM10"}};
+constexpr size_t kPmMeasurementCount =
+    sizeof(kPmMeasurements) / sizeof(kPmMeasurements[0]);
 
 struct SummaryAccumulator {
   uint32_t sums[kPmMeasurementCount] = {};
@@ -36,11 +40,8 @@ struct MeasurementSummary {
   uint16_t maximum = 0;
 };
 
-// The values to send when InfluxDB support is added later.
 struct MinuteSummary {
-  MeasurementSummary pm1_0;
-  MeasurementSummary pm2_5;
-  MeasurementSummary pm10;
+  MeasurementSummary measurements[kPmMeasurementCount];
   uint16_t sensor_number = 0;
   uint8_t sample_count = 0;
 };
@@ -49,7 +50,6 @@ uint8_t frame[kHm3301FrameSize];
 uint32_t next_measurement_ms = 0;
 uint32_t next_summary_ms = 0;
 SummaryAccumulator summary_accumulator;
-MinuteSummary latest_summary;
 bool sensor_ready = false;
 
 void setErrorLed(bool error) {
@@ -101,9 +101,9 @@ void printRawFrame(const uint8_t* data) {
 void addMeasurements(SummaryAccumulator& target, const uint8_t* data) {
   target.sensor_number = readBigEndian16(data, 2);
   for (size_t i = 0; i < kPmMeasurementCount; ++i) {
-    const uint16_t value = readBigEndian16(data, kPmMeasurementOffsets[i]);
+    const uint16_t value = readBigEndian16(data, kPmMeasurements[i].offset);
     target.sums[i] += value;
-    if (target.sample_count == 0 || value > target.maximums[i]) {
+    if (value > target.maximums[i]) {
       target.maximums[i] = value;
     }
   }
@@ -118,13 +118,10 @@ MinuteSummary finalizeSummary(const SummaryAccumulator& accumulator) {
     return result;
   }
 
-  MeasurementSummary* measurements[kPmMeasurementCount] = {
-      &result.pm1_0, &result.pm2_5, &result.pm10,
-  };
   for (size_t i = 0; i < kPmMeasurementCount; ++i) {
-    measurements[i]->average =
+    result.measurements[i].average =
         static_cast<float>(accumulator.sums[i]) / accumulator.sample_count;
-    measurements[i]->maximum = accumulator.maximums[i];
+    result.measurements[i].maximum = accumulator.maximums[i];
   }
   return result;
 }
@@ -148,14 +145,9 @@ void printSummary(uint32_t now, const MinuteSummary& data) {
   Serial.printf("sensor number: %u\n",
                 static_cast<unsigned int>(data.sensor_number));
   Serial.println("mass concentration - atmospheric environment:");
-  printMeasurementSummary("PM1.0", data.pm1_0);
-  printMeasurementSummary("PM2.5", data.pm2_5);
-  printMeasurementSummary("PM10", data.pm10);
-}
-
-void handleMinuteSummary(uint32_t now, const MinuteSummary& data) {
-  printSummary(now, data);
-  // A future InfluxDB POST can consume data here without changing aggregation.
+  for (size_t i = 0; i < kPmMeasurementCount; ++i) {
+    printMeasurementSummary(kPmMeasurements[i].label, data.measurements[i]);
+  }
 }
 }  // namespace
 
@@ -203,8 +195,7 @@ void loop() {
 
   const uint32_t now = millis();
   if (static_cast<int32_t>(now - next_summary_ms) >= 0) {
-    latest_summary = finalizeSummary(summary_accumulator);
-    handleMinuteSummary(now, latest_summary);
+    printSummary(now, finalizeSummary(summary_accumulator));
     summary_accumulator = {};
     do {
       next_summary_ms += kSummaryIntervalMs;
