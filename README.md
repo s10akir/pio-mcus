@@ -14,12 +14,23 @@ M5Stack NanoC6向けのPlatformIO（pioarduino）プロジェクトです。
 
 ```sh
 mise install
+cp include/secrets.example.h include/secrets.h
 ```
+
+`include/secrets.h`にWi-FiのSSIDとパスワード、VictoriaMetricsの完全な書き込みURL、Bearer token、NTPサーバーを設定してください。書き込みURLは`https://.../api/v1/import/prometheus`まで含めます。
+
+`include/secrets.h`はGit管理外です。秘密情報を`secrets.example.h`やその他の追跡対象ファイルへ書き込まないでください。
 
 ## ビルド
 
 ```sh
 mise exec -- pio run
+```
+
+ペイロード生成のホストテストは次で実行できます。
+
+```sh
+c++ -std=c++11 -Iinclude tests/test_metrics.cpp -o /tmp/test_metrics && /tmp/test_metrics
 ```
 
 ## 書き込み
@@ -38,9 +49,26 @@ mise exec -- pio run --target upload
 mise exec -- pio device monitor
 ```
 
-起動すると115200bpsでHM3301を1秒間隔で計測し、1分ごとに大気環境側のPM1.0、PM2.5、PM10質量濃度の平均値と最大値を表示します。
+起動すると115200bpsでHM3301を1秒間隔で計測し、1分ごとに大気環境側のPM1.0、PM2.5、PM10質量濃度の平均値と最大値を表示してVictoriaMetricsへ送信します。Wi-Fiは計測と並行して接続し、切断中は10秒間隔で再接続します。
 
-青色LEDは正常時には消灯します。I²CまたはHM3301の初期化に失敗した場合は点灯し続けます。計測中に読み取りまたはチェックサムの検証に失敗した場合も点灯し、次の正常な計測で消灯します。
+青色LEDは正常時には消灯します。センサー異常または通信異常がある間は点灯します。センサー異常は次の正常な計測、通信異常は次のPOST成功で解除されます。
+
+## VictoriaMetricsへ送るメトリクス
+
+Prometheusテキスト形式で、タイムスタンプを省略して送ります。すべての系列に`site="home"`、`location="working-room"`、`device="m5stack-nanoc6-01"`、`source="hm3301"`を付けます。
+
+送信するメトリクスは次の6種類です。
+
+- `environment_pm1_avg_micrograms_per_cubic_meter`
+- `environment_pm1_max_micrograms_per_cubic_meter`
+- `environment_pm2_5_avg_micrograms_per_cubic_meter`
+- `environment_pm2_5_max_micrograms_per_cubic_meter`
+- `environment_pm10_avg_micrograms_per_cubic_meter`
+- `environment_pm10_max_micrograms_per_cubic_meter`
+
+有効サンプルが0件の区間はPOSTしません。HTTP 2xx以外、Wi-Fi切断、NTP未同期、TLSエラーでは送信失敗としてSerialへ記録し、その区間の集計値は再送せず破棄します。
+
+TLS通信は暗号化されますが、サーバー証明書は検証しません。Bearer tokenの窃取やメトリクス改ざんを防ぐ必要が生じた場合は、ルートCA検証を有効にしてください。
 
 ## HM3301について
 

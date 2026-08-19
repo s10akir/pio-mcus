@@ -1,6 +1,13 @@
 #include <Arduino.h>
+#include <HTTPClient.h>
 #include <M5Unified.h>
+#include <NetworkClientSecure.h>
+#include <WiFi.h>
 #include <Wire.h>
+#include <time.h>
+
+#include "metrics.h"
+#include "secrets.h"
 
 namespace {
 constexpr uint8_t kBlueLedPin = 7;
@@ -16,7 +23,10 @@ constexpr uint8_t kHm3301SelectI2cCommand = 0x88;
 constexpr size_t kHm3301FrameSize = 29;
 constexpr uint32_t kMeasurementIntervalMs = 1000;
 constexpr uint32_t kSummaryIntervalMs = 60000;
+constexpr uint32_t kWifiRetryIntervalMs = 10000;
 constexpr uint8_t kReadAttempts = 3;
+constexpr time_t kMinimumValidTime = 1577836800;  // 2020-01-01 UTC
+constexpr size_t kPrometheusPayloadSize = 1024;
 
 // Atmospheric environment PM1.0, PM2.5, and PM10 in the HM3301 frame.
 struct PmMeasurement {
@@ -25,8 +35,9 @@ struct PmMeasurement {
 };
 constexpr PmMeasurement kPmMeasurements[] = {
     {10, "PM1.0"}, {12, "PM2.5"}, {14, "PM10"}};
-constexpr size_t kPmMeasurementCount =
-    sizeof(kPmMeasurements) / sizeof(kPmMeasurements[0]);
+static_assert(sizeof(kPmMeasurements) / sizeof(kPmMeasurements[0]) ==
+                  kPmMeasurementCount,
+              "PM measurement definitions must match the summary shape");
 
 struct SummaryAccumulator {
   uint32_t sums[kPmMeasurementCount] = {};
@@ -35,25 +46,50 @@ struct SummaryAccumulator {
   uint8_t sample_count = 0;
 };
 
-struct MeasurementSummary {
-  float average = 0.0f;
-  uint16_t maximum = 0;
-};
-
-struct MinuteSummary {
-  MeasurementSummary measurements[kPmMeasurementCount];
-  uint16_t sensor_number = 0;
-  uint8_t sample_count = 0;
-};
-
 uint8_t frame[kHm3301FrameSize];
+char prometheus_payload[kPrometheusPayloadSize];
 uint32_t next_measurement_ms = 0;
 uint32_t next_summary_ms = 0;
+uint32_t next_wifi_retry_ms = 0;
 SummaryAccumulator summary_accumulator;
 bool sensor_ready = false;
+bool sensor_error = false;
+bool network_error = true;
+bool wifi_was_connected = false;
 
-void setErrorLed(bool error) {
-  digitalWrite(kBlueLedPin, error ? HIGH : LOW);
+void updateErrorLed() {
+  digitalWrite(kBlueLedPin, sensor_error || network_error ? HIGH : LOW);
+}
+
+void startNetwork() {
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(Secrets::kWifiSsid, Secrets::kWifiPassword);
+  configTime(0, 0, Secrets::kNtpServer);
+  next_wifi_retry_ms = millis() + kWifiRetryIntervalMs;
+  Serial.printf("Wi-Fi connecting to %s\n", Secrets::kWifiSsid);
+}
+
+void maintainNetwork(uint32_t now) {
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!wifi_was_connected) {
+      Serial.printf("Wi-Fi connected: %s\n", WiFi.localIP().toString().c_str());
+      wifi_was_connected = true;
+    }
+    return;
+  }
+
+  if (wifi_was_connected) {
+    Serial.println("ERROR: Wi-Fi disconnected.");
+    wifi_was_connected = false;
+  }
+  network_error = true;
+  updateErrorLed();
+  if (static_cast<int32_t>(now - next_wifi_retry_ms) >= 0) {
+    Serial.println("Wi-Fi reconnecting...");
+    WiFi.begin(Secrets::kWifiSsid, Secrets::kWifiPassword);
+    next_wifi_retry_ms = now + kWifiRetryIntervalMs;
+  }
 }
 
 uint16_t readBigEndian16(const uint8_t* data, size_t index) {
@@ -149,6 +185,51 @@ void printSummary(uint32_t now, const MinuteSummary& data) {
     printMeasurementSummary(kPmMeasurements[i].label, data.measurements[i]);
   }
 }
+
+bool sendSummary(const MinuteSummary& summary) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("ERROR: summary not sent: Wi-Fi is disconnected.");
+    return false;
+  }
+  if (time(nullptr) < kMinimumValidTime) {
+    Serial.println("ERROR: summary not sent: NTP time is not synchronized.");
+    return false;
+  }
+
+  size_t payload_length = 0;
+  if (!formatPrometheusPayload(summary, prometheus_payload,
+                               sizeof(prometheus_payload), payload_length)) {
+    Serial.println("ERROR: summary not sent: Prometheus payload is too large.");
+    return false;
+  }
+
+  NetworkClientSecure client;
+  // ponytail: TLS peer verification is intentionally disabled; restore
+  // setCACert if token or metric integrity matters.
+  client.setInsecure();
+  HTTPClient http;
+  if (!http.begin(client, Secrets::kVictoriaMetricsUrl)) {
+    Serial.println("ERROR: summary not sent: invalid VictoriaMetrics URL.");
+    return false;
+  }
+  http.addHeader("Authorization", String("Bearer ") + Secrets::kBearerToken);
+  http.addHeader("Content-Type", "text/plain");
+  const int status = http.POST(
+      reinterpret_cast<uint8_t*>(prometheus_payload), payload_length);
+  http.end();
+
+  if (status < 200 || status >= 300) {
+    if (status < 0) {
+      Serial.printf("ERROR: VictoriaMetrics POST failed: %s (%d).\n",
+                    HTTPClient::errorToString(status).c_str(), status);
+    } else {
+      Serial.printf("ERROR: VictoriaMetrics POST returned HTTP %d.\n", status);
+    }
+    return false;
+  }
+  Serial.printf("VictoriaMetrics POST succeeded: HTTP %d.\n", status);
+  return true;
+}
 }  // namespace
 
 void setup() {
@@ -162,17 +243,20 @@ void setup() {
                 kI2cSdaPin, kHm3301Address);
 
   pinMode(kBlueLedPin, OUTPUT);
-  setErrorLed(false);
+  updateErrorLed();
+  startNetwork();
 
   if (!Wire.begin(kI2cSdaPin, kI2cSclPin, kI2cFrequencyHz)) {
     Serial.println("ERROR: failed to initialize I2C bus.");
-    setErrorLed(true);
+    sensor_error = true;
+    updateErrorLed();
     return;
   }
 
   if (!selectHm3301I2c()) {
     Serial.println("ERROR: HM3301 did not respond. Check power and wiring.");
-    setErrorLed(true);
+    sensor_error = true;
+    updateErrorLed();
     return;
   }
 
@@ -188,14 +272,21 @@ void setup() {
 void loop() {
   M5.update();
 
+  const uint32_t now = millis();
+  maintainNetwork(now);
+
   if (!sensor_ready) {
     delay(100);
     return;
   }
 
-  const uint32_t now = millis();
   if (static_cast<int32_t>(now - next_summary_ms) >= 0) {
-    printSummary(now, finalizeSummary(summary_accumulator));
+    const MinuteSummary summary = finalizeSummary(summary_accumulator);
+    printSummary(now, summary);
+    if (summary.sample_count > 0) {
+      network_error = !sendSummary(summary);
+      updateErrorLed();
+    }
     summary_accumulator = {};
     do {
       next_summary_ms += kSummaryIntervalMs;
@@ -225,7 +316,8 @@ void loop() {
 
   if (!read_succeeded) {
     Serial.println("ERROR: failed to read 29 bytes from HM3301 after 3 attempts.");
-    setErrorLed(true);
+    sensor_error = true;
+    updateErrorLed();
     return;
   }
   if (!checksum_valid) {
@@ -234,10 +326,12 @@ void loop() {
         "(calculated=0x%02X, received=0x%02X).\n",
         calculateChecksum(frame), frame[kHm3301FrameSize - 1]);
     printRawFrame(frame);
-    setErrorLed(true);
+    sensor_error = true;
+    updateErrorLed();
     return;
   }
 
-  setErrorLed(false);
+  sensor_error = false;
+  updateErrorLed();
   addMeasurements(summary_accumulator, frame);
 }

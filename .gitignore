@@ -1,2 +1,3 @@
 .pio/
 .pioarduino/
+include/secrets.h
