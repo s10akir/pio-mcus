@@ -1,10 +1,9 @@
 #include <Arduino.h>
-#include <HTTPClient.h>
 #include <M5Unified.h>
-#include <NetworkClientSecure.h>
 #include <Wire.h>
 #include <time.h>
 
+#include <VictoriaMetrics.h>
 #include <WifiConnection.h>
 #include "metrics.h"
 #include "secrets.h"
@@ -182,32 +181,9 @@ bool sendSummary(const MinuteSummary& summary) {
     return false;
   }
 
-  NetworkClientSecure client;
-  // ponytail: TLS peer verification is intentionally disabled; restore
-  // setCACert if token or metric integrity matters.
-  client.setInsecure();
-  HTTPClient http;
-  if (!http.begin(client, Secrets::kVictoriaMetricsUrl)) {
-    Serial.println("ERROR: summary not sent: invalid VictoriaMetrics URL.");
-    return false;
-  }
-  http.addHeader("Authorization", String("Bearer ") + Secrets::kBearerToken);
-  http.addHeader("Content-Type", "text/plain");
-  const int status = http.POST(
-      reinterpret_cast<uint8_t*>(prometheus_payload), payload_length);
-  http.end();
-
-  if (status < 200 || status >= 300) {
-    if (status < 0) {
-      Serial.printf("ERROR: VictoriaMetrics POST failed: %s (%d).\n",
-                    HTTPClient::errorToString(status).c_str(), status);
-    } else {
-      Serial.printf("ERROR: VictoriaMetrics POST returned HTTP %d.\n", status);
-    }
-    return false;
-  }
-  Serial.printf("VictoriaMetrics POST succeeded: HTTP %d.\n", status);
-  return true;
+  return VictoriaMetrics::post(Secrets::kVictoriaMetricsUrl,
+                               Secrets::kBearerToken, prometheus_payload,
+                               payload_length);
 }
 }  // namespace
 
