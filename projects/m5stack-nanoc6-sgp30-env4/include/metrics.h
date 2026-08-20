@@ -60,8 +60,8 @@ inline bool formatPrometheusPayload(const MinuteSummary& summary, char* output,
     }
     const int written = snprintf(
         output + length, capacity - length,
-        "environment_%s_avg{site=\"home\",location=\"working-room\",device=\"m5stack-nanoc6-01\",source=\"%s\"} %.2f\n"
-        "environment_%s_max{site=\"home\",location=\"working-room\",device=\"m5stack-nanoc6-01\",source=\"%s\"} %.2f\n",
+        "environment_%s_avg{site=\"home\",location=\"working-room\",device=\"m5stack-nanoc6-02\",source=\"%s\"} %.2f\n"
+        "environment_%s_max{site=\"home\",location=\"working-room\",device=\"m5stack-nanoc6-02\",source=\"%s\"} %.2f\n",
         definitions[i].name, definitions[i].source, summary.metrics[i].average,
         definitions[i].name, definitions[i].source, summary.metrics[i].maximum);
     if (written < 0 || static_cast<size_t>(written) >= capacity - length) {

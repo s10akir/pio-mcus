@@ -43,7 +43,7 @@ SGP30は専用タスクで1秒周期を維持し、ENV.IVの温度・相対湿�
 - `environment_tvoc_parts_per_billion_{avg,max}`
 - `environment_eco2_parts_per_million_{avg,max}`
 
-すべての系列に`site="home"`、`location="working-room"`、`device="m5stack-nanoc6-01"`を付けます。ENV.IV由来の系列は`source="env4"`、SGP30由来の系列は`source="sgp30"`です。
+すべての系列に`site="home"`、`location="working-room"`、`device="m5stack-nanoc6-02"`を付けます。ENV.IV由来の系列は`source="env4"`、SGP30由来の系列は`source="sgp30"`です。
 
 eCO2はVOC/H2から推定したCO2換算値であり、実際のCO2濃度ではありません。
 

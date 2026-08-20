@@ -26,10 +26,10 @@ int main() {
   }
   assert(lines == 10);
   assert(strstr(payload,
-                "environment_pressure_pascals_avg{site=\"home\",location=\"working-room\",device=\"m5stack-nanoc6-01\",source=\"env4\"} 3.25\n") !=
+                "environment_pressure_pascals_avg{site=\"home\",location=\"working-room\",device=\"m5stack-nanoc6-02\",source=\"env4\"} 3.25\n") !=
          nullptr);
   assert(strstr(payload,
-                "environment_eco2_parts_per_million_max{site=\"home\",location=\"working-room\",device=\"m5stack-nanoc6-01\",source=\"sgp30\"} 6.50\n") !=
+                "environment_eco2_parts_per_million_max{site=\"home\",location=\"working-room\",device=\"m5stack-nanoc6-02\",source=\"sgp30\"} 6.50\n") !=
          nullptr);
 
   summary.metrics[kPressure].sample_count = 0;
