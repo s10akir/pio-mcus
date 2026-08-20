@@ -8,7 +8,10 @@ pioarduinoを使う複数のMCUプロジェクトを管理するリポジトリ�
 
 ```sh
 mise install
+cp include/secrets.example.h include/secrets.h
 ```
+
+`include/secrets.h`に全プロジェクト共通のWi-FiとVictoriaMetrics接続情報を設定してください。このファイルはGit管理外です。
 
 ## プロジェクト
 
@@ -25,6 +28,8 @@ mise exec -- pio device monitor --project-dir projects/m5stack-nanoc6-hm3301
 ```
 
 新しいプロジェクトは`projects/<name>/`に独立した`platformio.ini`、`src/`、`include/`を置きます。
+
+共通の秘密情報を使うプロジェクトは、`build_flags`へ`-I ../../include`を追加します。プロジェクト固有の秘密情報が必要になるまでは個別設定を作りません。
 
 複数プロジェクトでコードを共有する必要が生じた場合は、manifest付きライブラリを`shared/<library>/`に置き、利用するプロジェクトの`lib_deps`から明示的に参照します。
 

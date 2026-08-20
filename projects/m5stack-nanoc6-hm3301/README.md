@@ -17,12 +17,12 @@ M5Stack NanoC6向けのPlatformIO（pioarduino）プロジェクトです。
 ```sh
 cd projects/m5stack-nanoc6-hm3301
 mise install
-cp include/secrets.example.h include/secrets.h
+cp ../../include/secrets.example.h ../../include/secrets.h
 ```
 
-`include/secrets.h`にWi-FiのSSIDとパスワード、VictoriaMetricsの完全な書き込みURL、Bearer token、NTPサーバーを設定してください。書き込みURLは`https://.../api/v1/import/prometheus`まで含めます。
+`../../include/secrets.h`に全プロジェクト共通のWi-FiのSSIDとパスワード、VictoriaMetricsの完全な書き込みURL、Bearer token、NTPサーバーを設定してください。書き込みURLは`https://.../api/v1/import/prometheus`まで含めます。
 
-`include/secrets.h`はGit管理外です。秘密情報を`secrets.example.h`やその他の追跡対象ファイルへ書き込まないでください。
+`../../include/secrets.h`はGit管理外です。秘密情報を`secrets.example.h`やその他の追跡対象ファイルへ書き込まないでください。
 
 ## ビルド
 
