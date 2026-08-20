@@ -18,6 +18,7 @@ cp include/secrets.example.h include/secrets.h
 | プロジェクト | 説明 |
 | --- | --- |
 | [m5stack-nanoc6-hm3301](projects/m5stack-nanoc6-hm3301/) | M5Stack NanoC6とHM3301による大気環境PM値の計測・送信 |
+| [m5stack-nanoc6-sgp30-env4](projects/m5stack-nanoc6-sgp30-env4/) | M5Stack NanoC6、SGP30、ENV.IVによる室内環境の計測・送信 |
 
 対象プロジェクトはPlatformIO標準の`--project-dir`で指定します。
 
