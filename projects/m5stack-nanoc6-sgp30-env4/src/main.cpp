@@ -40,6 +40,14 @@ struct MetricAccumulator {
   uint16_t sample_count = 0;
 };
 
+constexpr bool isValidBaseline(uint16_t co2eq, uint16_t tvoc) {
+  return co2eq != 0xFFFF && tvoc != 0xFFFF;
+}
+
+static_assert(isValidBaseline(0x1234, 0x5678));
+static_assert(!isValidBaseline(0xFFFF, 0x5678));
+static_assert(!isValidBaseline(0x1234, 0xFFFF));
+
 m5::unit::UnitUnified units;
 m5::unit::UnitENV4 env4;
 m5::unit::UnitSGP30 sgp30;
@@ -91,6 +99,14 @@ bool loadBaseline(BaselineRecord& record) {
     return false;
   }
 
+  if (!isValidBaseline(record.co2eq, record.tvoc)) {
+    Serial.printf("Discarding invalid SGP30 baseline: eCO2=0x%04X, "
+                  "TVOC=0x%04X\n",
+                  record.co2eq, record.tvoc);
+    preferences.remove("baseline");
+    return false;
+  }
+
   const time_t now = time(nullptr);
   return record.magic == kBaselineMagic &&
          record.sensor_serial == sensor_serial && now >= kMinimumValidTime &&
@@ -109,6 +125,12 @@ bool saveBaseline() {
   BaselineRecord record = {};
   if (!sgp30.readIaqBaseline(record.co2eq, record.tvoc)) {
     Serial.println("ERROR: failed to read SGP30 baseline.");
+    return false;
+  }
+  if (!isValidBaseline(record.co2eq, record.tvoc)) {
+    Serial.printf("ERROR: invalid SGP30 baseline not saved: eCO2=0x%04X, "
+                  "TVOC=0x%04X\n",
+                  record.co2eq, record.tvoc);
     return false;
   }
   record.magic = kBaselineMagic;
